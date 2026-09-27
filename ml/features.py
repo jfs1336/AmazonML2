@@ -117,7 +117,10 @@ def load_candidate_pairs(candidate_path: str | Path) -> Dict[str, List[str]]:
     return dict(candidate_map)
 
 
-def generate_training_examples(train_dir: str | Path) -> pd.DataFrame:
+def generate_training_examples(
+    train_dir: str | Path,
+    source1_ids: set[str] | None = None,
+) -> pd.DataFrame:
     train_dir = Path(train_dir)
     s1_df = load_source_file(train_dir / "train_source1.tsv")
     s2_df = load_source_file(train_dir / "train_source2.tsv")
@@ -140,6 +143,8 @@ def generate_training_examples(train_dir: str | Path) -> pd.DataFrame:
     rng = random.Random(42)
     rows: List[Dict[str, Any]] = []
     for s1_id in s1_df["entity_id"].astype(str).tolist():
+        if source1_ids is not None and s1_id not in source1_ids:
+            continue
         s1_row = s1_lookup.get(s1_id)
         if s1_row is None:
             continue

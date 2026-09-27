@@ -19,6 +19,7 @@ def write_matching_results(
     output_path: Path,
     candidate_path: Path,
     threshold: float = 0.5,
+    model_path: Path | None = None,
 ) -> None:
     if not candidate_path.exists():
         write_candidate_rows(s1_path, s2_path, s3_path, candidate_path)
@@ -28,7 +29,22 @@ def write_matching_results(
     s2_df = load_source_file(s2_path)
     s3_df = load_source_file(s3_path)
 
-    model, feature_cols = train_model(train_dir)
+    import joblib
+
+    if model_path is not None and model_path.exists():
+        feature_path = model_path.with_name(f"{model_path.stem}_features.txt")
+        if not feature_path.exists():
+            raise FileNotFoundError(f"Model feature list not found: {feature_path}")
+        model = joblib.load(model_path)
+        feature_cols = feature_path.read_text(encoding="utf-8").splitlines()
+    else:
+        model, feature_cols = train_model(train_dir)
+        if model_path is not None:
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(model, model_path)
+            feature_path = model_path.with_name(f"{model_path.stem}_features.txt")
+            feature_path.write_text("\n".join(feature_cols), encoding="utf-8")
+
     predicted = predict_matches_for_candidate_map(model, feature_cols, s1_df, s2_df, s3_df, candidate_map, threshold)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,6 +64,7 @@ def main() -> None:
     parser.add_argument("--source3", type=Path, default=Path("student_resource/dataset/test/test_source3.tsv"))
     parser.add_argument("--candidate", type=Path, default=Path("output/candidate_pairs.tsv"))
     parser.add_argument("--output", type=Path, default=Path("output/matching_results.tsv"))
+    parser.add_argument("--model", type=Path, default=Path("output/matching_model.joblib"))
     parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
@@ -59,6 +76,7 @@ def main() -> None:
         output_path=args.output,
         candidate_path=args.candidate,
         threshold=args.threshold,
+        model_path=args.model,
     )
     print(f"Wrote matching results to {args.output}")
 

@@ -93,7 +93,7 @@ def normalize_business_name(value: object) -> str:
     text = text.replace("+", " ")
     text = text.replace(".", " ")
     text = text.replace("-", " ")
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"[\W_]", " ", text, flags=re.UNICODE)
     text = re.sub(r"\s+", " ", text).strip()
 
     for old, new in COMMON_SUFFIX_REPLACEMENTS.items():
@@ -132,7 +132,7 @@ def normalize_address(value: object) -> str:
     text = text.replace("+", " ")
     text = text.replace(".", " ")
     text = text.replace("-", " ")
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"[\W_]", " ", text, flags=re.UNICODE)
 
     tokens = text.split()
     normalized_tokens: List[str] = []

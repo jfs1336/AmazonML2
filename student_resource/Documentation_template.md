@@ -7,7 +7,7 @@
 ---
 
 ## 1. Executive Summary
-Our solution follows a hybrid entity-resolution pipeline: we first reduce the search space with a strong blocking rule built on normalized business names and addresses, then apply a calibrated binary classifier to score candidate pairs. The blocking stage is designed to preserve recall while keeping the candidate set compact, and the matcher focuses on precision by using robust token-level and string-similarity features. This combination is well suited to the noisy, partially inconsistent business records in the challenge data.
+Our solution follows a two-stage entity-resolution pipeline. It generates candidates by indexing normalized business names and addresses, then scores each candidate pair with a class-balanced logistic-regression classifier. The current implementation uses seven token-overlap, edit-similarity, and country features. The default decision threshold is 0.5; it is configurable and should be assessed on a held-out validation set rather than described as calibrated.
 
 ---
 
@@ -25,7 +25,7 @@ We used a two-stage pipeline:
 This is a hybrid blocking + classifier approach, designed to balance recall in the first stage with precision in the second stage.
 
 **Approach Type:** Hybrid (Blocking + Classifier)  
-**Core Innovation:** A robust normalized-name/address blocking index that suppresses cosmetic noise and a compact feature set that captures token overlap, edit similarity, and country consistency for precision-oriented matching.
+**Core Approach:** Normalized-name and normalized-address indexes reduce the comparison space; a compact seven-feature model ranks the remaining pairs. Unicode letters and numbers are preserved during NFKC-based normalization.
 
 ---
 
@@ -33,50 +33,48 @@ This is a hybrid blocking + classifier approach, designed to balance recall in t
 The blocking stage creates a candidate set for each Source 1 entity by indexing records from Sources 2 and 3 using normalized text forms. We did not rely on exact raw string equality; instead, we normalized name and address fields to reduce common noise patterns such as abbreviations, punctuation, legal suffixes, and address shorthand.
 
 - **Blocking keys used:** normalized business name variants, normalized address strings, source-country consistency checks
-- **Candidate pairs generated:** produced by the blocking stage in `output/candidate_pairs.tsv`; every Source 1 entity in the test set is represented once with its candidate list
+- **Candidate pairs generated:** `generate_candidate_pairs.py` writes one row per Source 1 record to `output/candidate_pairs.tsv`, including empty candidate lists. This output is generated when the test data is available; it is not included in the current checkout.
 - **How we ensured true matches were not lost:**
-  - business names were normalized by converting common suffixes and abbreviations to canonical forms, stripping legal suffixes, and removing domain-style tokens
+  - business names are NFKC-normalized, case-folded to lowercase, cleaned of punctuation, and normalized for common legal suffixes and domain-style tokens
   - address strings were normalized to a comparable representation that removes noisy markers like landmarks, country labels, and repeated apartment/unit fragments
   - candidate generation combined both name and address evidence, and pairs were filtered by country compatibility when both country values were available
-  - this design keeps the candidate pool broad enough to cover the known match patterns while still reducing the full cross-product dramatically
+  - Unicode letters and numbers are preserved; candidate generation matches exact normalized keys, not fuzzy similarities
 
-A key implementation detail is that the candidate set is the last blocking stage before model inference, which matches the challenge requirements for the pipeline audit and validation.
+The generated candidate file is the set passed to inference. The blocker admits a pair when either its normalized name key or normalized address key matches, provided known country values do not conflict. Candidate recall must be measured on training data; it is not guaranteed by the rules themselves.
 
 ---
 
 ## 4. Matching Model
 
 **Features used:**
-- Name features:
-  - Jaccard similarity on normalized name tokens
-  - token overlap between the business names
-  - sequence-based similarity on normalized name strings
-- Address features:
-  - Jaccard similarity on normalized address tokens
-  - token overlap between address strings
-  - sequence-based similarity on normalized address strings
-- Other:
-  - country match indicator
+- `name_jaccard`: Jaccard similarity of normalized business-name tokens
+- `name_token_overlap`: intersection size divided by the larger name-token set
+- `name_edit_similarity`: `difflib.SequenceMatcher` ratio on normalized names
+- `address_jaccard`: Jaccard similarity of normalized address tokens
+- `address_token_overlap`: intersection size divided by the larger address-token set
+- `address_edit_similarity`: `difflib.SequenceMatcher` ratio on normalized addresses
+- `country_match`: equality of lowercased country strings
 
-**Model type:** Logistic Regression with class balancing  
-**Threshold selection method:** candidate pairs are scored by the trained model probability; a default probability threshold of 0.5 is applied to keep the final predictions precision-focused while allowing matches when the feature evidence is strong.
+**Model type:** Logistic Regression (`max_iter=2000`, `class_weight="balanced"`)
 
-The training pipeline builds pairwise examples from the blocking candidate set, computes the above features for each pair, and trains a balanced logistic regression classifier. This keeps the model small, interpretable, and efficient while still capturing the main discriminative signals in the dataset.
+**Threshold:** 0.5 by default, configurable at prediction and evaluation time. It has not been tuned or calibrated in the checked-in code.
+
+The training pipeline labels blocked pairs from ground truth and samples additional non-blocked negative pairs. The negative sample count varies by Source 1 entity (up to ten). `ml/evaluate.py` creates a deterministic holdout split by Source 1 ID and reports candidate recall and macro F0.5, including correct singleton predictions.
 
 ---
 
 ## 5. Results & Error Analysis
 
-- **F_0.5 Score (macro):** best validation result is obtained by the trained logistic model on the generated candidate pairs; the pipeline’s outputs are recorded in the project outputs and validated against the challenge submission rules
-- **Common false positives (wrong merges):** records with similar names or overlapping address tokens but distinct entities, especially when the same business type or street/location context appears across multiple establishments
-- **Common false negatives (missed matches):** records with aggressive formatting differences, partial addresses, or missing/renamed legal identifiers that failed to match the canonical name/address representation even though the pair was otherwise a true match
+- **F0.5 Score (macro):** not yet recorded. Run `python -m ml.evaluate` with the training dataset and report its measured result here.
+- **Candidate recall:** not yet recorded for the current blocker. The same validation command reports it.
+- **Error analysis:** no labeled validation predictions are included in this checkout, so false-positive and false-negative patterns have not been measured. Likely failure cases to inspect include shared business names, partial addresses, and records whose normalized keys do not collide.
 
-The main limitation of the current pipeline is that it still depends on textual normalization quality. In difficult cases where the company name is shortened to a local shorthand or the address is only partially present, the model can struggle unless the blocking stage preserves enough candidate evidence.
+The main limitation is the exact-key blocking rule: fuzzy similarities are applied only after blocking, so a true match with neither a shared normalized name nor a shared normalized address cannot be scored. Prediction currently loads the source tables and candidate map into memory; full-scale resource use should be measured on the challenge data.
 
 ---
 
 ## 6. Conclusion
-Our approach is a practical and robust solution to business entity resolution under noisy, multi-source conditions. By combining a carefully engineered blocking strategy with a lightweight but discriminative matching model, we reduce the comparison space substantially while maintaining good precision and recall on the candidate set. The implementation is transparent, reproducible, and aligned with the challenge requirements for both the scoring pipeline and the final submission package.
+The repository contains an executable blocking and matching pipeline, a holdout evaluator, and a submission validator. Its quality and full-scale behavior remain to be established by running the evaluator and generating the required outputs with the challenge dataset.
 
 ---
 
@@ -87,22 +85,22 @@ The runnable pipeline is organized as follows:
 
 - `src/blocking.py` — normalization helpers, indexing logic, candidate generation, and evaluation utilities
 - `ml/features.py` — feature construction for candidate pairs and model training logic
-- `ml/predict.py` — prediction pipeline that scores all blocking candidates and writes `matching_results.tsv`
+- `ml/train.py` — train and save the logistic-regression model and feature list
+- `ml/evaluate.py` — deterministic Source 1 holdout evaluation using macro F0.5
+- `ml/predict.py` — score candidates and write `matching_results.tsv`, reusing or creating the saved model
 - `generate_candidate_pairs.py` — end-to-end candidate generation for the test data
-- `output/` — generated candidate and final match files
+- `student_resource/utils/validate_submission.py` — validate submission formatting and ID coverage
+- `output/` — generated artifacts; not present until the pipeline is run
 
 To reproduce the outputs:
 
-1. Generate candidate pairs from the test data using the blocking stage
-2. Train the matcher on the training set
-3. Score every candidate pair with the classifier
-4. Write the final `matching_results.tsv` and the candidate file `candidate_pairs.tsv` into the output directory
+1. Install dependencies from `requirements.txt` and place the provided data under `student_resource/dataset/{train,test}/`.
+2. Run `python -m ml.evaluate --train-dir student_resource/dataset/train` and record the measured validation results above.
+3. Run `python -m ml.train --train-dir student_resource/dataset/train --output-dir output`.
+4. Generate test candidates with `python generate_candidate_pairs.py`.
+5. Run `python -m ml.predict` and validate the two TSV files with `student_resource/utils/validate_submission.py`.
 
-The project is designed to be executable from the repository root with the provided scripts and the challenge dataset layout.
+Commands and arguments are documented in the repository-root `README.md`.
 
 ### B. Additional Results
-The blocking and matching outputs are stored in the repository’s `output/` folder, and the files are validated against the challenge submission rules before use. The logic explicitly enforces one row per Source 1 entity, candidate IDs restricted to S2/S3 records, and output formatting in TSV form to satisfy the scorer requirements.
-
----
-
-**Note:** This methodology reflects the implemented solution in the current pipeline and is tailored to the actual blocking and matching logic used for the challenge submission.
+No candidate or matching output files are included in the current checkout. The validator checks the generated TSV headers, required Source 1 coverage, duplicate IDs, allowed ID prefixes, and (optionally) ID existence and candidate-subset consistency. 
